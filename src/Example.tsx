@@ -1,9 +1,11 @@
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import * as React from 'react';
 
-// Define the structure for each data point in the chart
+// Define the structure for each data point from the API
 interface ChartData {
-  [key: string]: string | number;
+  District: string;
+  GeographicalAreaSqKms: number;
+  PopulationDensity: number;
 }
 
 // Define the state structure for the Example component
@@ -13,6 +15,9 @@ interface ExampleState {
   error: string | null;
 }
 
+// Configuration for the API
+const API_BASE_URL = 'http://localhost:8000';
+
 export default function Example() {
   // Initialize the component's state
   const [state, setState] = React.useState<ExampleState>({
@@ -21,138 +26,204 @@ export default function Example() {
     error: null
   });
 
-  // useEffect hook to load CSV data when the component mounts
+  // useEffect hook to load data from FastAPI when the component mounts
   React.useEffect(() => {
-    const loadCSVData = () => {
-      // Fetch the CSV file from the public folder
-      fetch('/Area_Population_Density_and_Population_2011_Census.csv')
-        .then((response) => {
-          // Check if the network response was successful
-          if (!response.ok) {
-            throw new Error('Failed to fetch CSV file');
-          }
-          // Return the response body as text
-          return response.text();
-        })
-        .then((csvText) => {
-          // Parse the CSV text into an array of objects
-          const lines = csvText.split('\n');
-          // Get headers from the first line, trimming whitespace
-          const headers = lines[0].split(',').map((h: string) => h.trim());
-          
-          const parsedData: ChartData[] = [];
-          // Iterate over lines starting from the second line (skipping headers)
-          for (let i = 1; i < lines.length; i++) {
-            if (lines[i].trim()) { // Ensure the line is not empty
-              const values = lines[i].split(',');
-              const row: ChartData = {};
-              // Map values to headers to create an object for each row
-              for (let j = 0; j < headers.length; j++) {
-                const header = headers[j];
-                const value = values[j] ? values[j].trim() : '';
-                // Attempt to convert value to a number; otherwise, keep as string
-                const numValue = parseFloat(value);
-                row[header] = !isNaN(numValue) ? numValue : value;
-              }
-              parsedData.push(row);
-            }
-          }
+    const loadDataFromAPI = async () => {
+      try {
+        setState(prevState => ({ ...prevState, loading: true, error: null }));
 
-          // Filter out the "State Total" row to avoid skewing the chart
-          // Assuming 'District' is the column containing 'State Total'
-          const nameKeyForFiltering = 'District'; // Explicitly set the key for filtering
-          const filteredData = parsedData.filter(row => {
-            const rowNameValue = nameKeyForFiltering ? String(row[nameKeyForFiltering]).toLowerCase() : '';
-            return rowNameValue !== 'state total';
-          });
-          
-          // Take only the first 20 districts as requested
-          const finalData = filteredData.slice(0, 20);
+        // Fetch data from FastAPI endpoint
+        const response = await fetch(`${API_BASE_URL}/chart-data?limit=20`);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
 
-          // Update the component's state with the parsed and filtered data
-          setState({
-            data: finalData,
-            loading: false,
-            error: null
-          });
-        })
-        .catch((err) => {
-          // Handle any errors during fetching or parsing
-          setState({
-            data: [],
-            loading: false,
-            error: 'Failed to load CSV data'
-          });
-          console.error('Error loading CSV:', err);
+        const chartData: ChartData[] = await response.json();
+
+        // Update the component's state with the fetched data
+        setState({
+          data: chartData,
+          loading: false,
+          error: null
         });
+      } catch (err) {
+        // Handle any errors during fetching
+        const errorMessage = err instanceof Error ? err.message : 'Failed to load data from API';
+        setState({
+          data: [],
+          loading: false,
+          error: errorMessage
+        });
+        console.error('Error loading data from API:', err);
+      }
     };
 
-    loadCSVData(); // Call the function to load data
+    loadDataFromAPI();
   }, []); // Empty dependency array means this effect runs once after the initial render
+
+  // Function to refresh data
+  const refreshData = () => {
+    setState(prevState => ({ ...prevState, loading: true, error: null }));
+    // Trigger re-fetch by updating a dependency or calling the fetch function again
+    window.location.reload(); // Simple approach, or you could extract the fetch logic
+  };
 
   // Render loading state
   if (state.loading) {
-    return React.createElement('div', null, 'Loading CSV data...');
+    return (
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'center', 
+        alignItems: 'center', 
+        height: '100%',
+        flexDirection: 'column'
+      }}>
+        <div>Loading data from FastAPI...</div>
+        <div style={{ marginTop: '10px', fontSize: '14px', color: '#666' }}>
+          Make sure FastAPI server is running on {API_BASE_URL}
+        </div>
+      </div>
+    );
   }
   
   // Render error state
   if (state.error) {
-    return React.createElement('div', null, 'Error: ' + state.error);
+    return (
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'center', 
+        alignItems: 'center', 
+        height: '100%',
+        flexDirection: 'column',
+        color: 'red'
+      }}>
+        <div>Error: {state.error}</div>
+        <button 
+          onClick={refreshData}
+          style={{
+            marginTop: '10px',
+            padding: '10px 20px',
+            backgroundColor: '#007bff',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer'
+          }}
+        >
+          Retry
+        </button>
+        <div style={{ marginTop: '10px', fontSize: '14px', color: '#666' }}>
+          Make sure FastAPI server is running on {API_BASE_URL}
+        </div>
+      </div>
+    );
   }
   
   // Render no data available state
   if (state.data.length === 0) {
-    return React.createElement('div', null, 'No data available');
+    return (
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'center', 
+        alignItems: 'center', 
+        height: '100%' 
+      }}>
+        No data available
+      </div>
+    );
   }
 
-  // Define the data keys for the chart
-  const nameKey = 'District'; // X-axis will display District names
-  const dataKeys = ['Geograpical Area (Sq.Kms)', 'Population Density']; // Y-axis lines for these two metrics
-
   // Calculate the maximum Y-axis value for dynamic scaling
-  const allNumericValues: number[] = [];
+  const allValues: number[] = [];
   state.data.forEach(row => {
-    dataKeys.forEach(key => { // Iterate through the specific dataKeys for the chart
-      if (typeof row[key] === 'number') {
-        allNumericValues.push(row[key] as number);
-      }
-    });
+    allValues.push(row.GeographicalAreaSqKms, row.PopulationDensity);
   });
 
-  const maxYValue = allNumericValues.length > 0 ? Math.max(...allNumericValues) : 0;
-  // Add 10% padding to the max Y value for better visualization, or default to 100 if no data
-  const paddedMaxY = maxYValue > 0 ? maxYValue * 1.1 : 100; 
+  const maxYValue = allValues.length > 0 ? Math.max(...allValues) : 0;
+  const paddedMaxY = maxYValue > 0 ? maxYValue * 1.1 : 100;
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      <LineChart
-        width={500}
-        height={300}
-        data={state.data}
-        margin={{
-          top: 5,
-          right: 30,
-          left: 20,
-          bottom: 5,
-        }}
-      >
-        <CartesianGrid strokeDasharray="3 3" /> {/* Grid lines for the chart */}
-        <XAxis dataKey={nameKey} interval={0} angle={-45} textAnchor="end" height={100} /> {/* X-axis for Districts, rotated labels */}
-        <YAxis domain={[0, paddedMaxY]} /> {/* Y-axis with dynamic domain */}
-        <Tooltip /> {/* Tooltip for displaying data on hover */}
-        <Legend /> {/* Legend to identify lines */}
-        {/* Render a Line for each dataKey */}
-        {dataKeys.map((key: string, index: number) => (
-          <Line 
-            key={key}
-            type="monotone" 
-            dataKey={key} 
-            stroke={index === 0 ? "#8884d8" : "#82ca9d"} // Different colors for each line
-            activeDot={{ r: 8 }} // Larger dot on hover
-            name={key} // Display the full key name in the legend and tooltip
-          />
-        ))}
-      </LineChart>
-    </ResponsiveContainer>
+    <div style={{ width: '100%', height: '100%' }}>
+      {/* Header with data info */}
+      <div style={{ 
+        padding: '10px', 
+        backgroundColor: '#f8f9fa', 
+        borderBottom: '1px solid #dee2e6',
+        textAlign: 'center'
+      }}>
+        <h3 style={{ margin: '0 0 5px 0' }}>
+          Karnataka Districts: Geographical Area vs Population Density
+        </h3>
+        <p style={{ margin: '0', color: '#666', fontSize: '14px' }}>
+          Data from FastAPI • {state.data.length} districts • 
+          <button 
+            onClick={refreshData}
+            style={{
+              marginLeft: '10px',
+              padding: '5px 10px',
+              backgroundColor: '#28a745',
+              color: 'white',
+              border: 'none',
+              borderRadius: '3px',
+              cursor: 'pointer',
+              fontSize: '12px'
+            }}
+          >
+            Refresh
+          </button>
+        </p>
+      </div>
+
+      {/* Chart container */}
+      <div style={{ width: '100%', height: 'calc(100% - 80px)' }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart
+            data={state.data}
+            margin={{
+              top: 20,
+              right: 30,
+              left: 20,
+              bottom: 100,
+            }}
+          >
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis 
+              dataKey="District" 
+              interval={0} 
+              angle={-45} 
+              textAnchor="end" 
+              height={100}
+              fontSize={12}
+            />
+            <YAxis domain={[0, paddedMaxY]} />
+            <Tooltip 
+              formatter={(value: number, name: string) => [
+                typeof value === 'number' ? value.toLocaleString() : value,
+                name === 'GeographicalAreaSqKms' ? 'Geographical Area (Sq.Kms)' : 'Population Density'
+              ]}
+              labelFormatter={(label: string) => `District: ${label}`}
+            />
+            <Legend />
+            <Line 
+              type="monotone" 
+              dataKey="GeographicalAreaSqKms" 
+              stroke="#8884d8" 
+              activeDot={{ r: 6 }}
+              name="Geographical Area (Sq.Kms)"
+              strokeWidth={2}
+            />
+            <Line 
+              type="monotone" 
+              dataKey="PopulationDensity" 
+              stroke="#82ca9d" 
+              activeDot={{ r: 6 }}
+              name="Population Density"
+              strokeWidth={2}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
   );
 }
