@@ -127,9 +127,29 @@ def verify_data():
         # Get sample data
         cur.execute("SELECT district, geographical_area, population_density FROM populations LIMIT 5;")
         sample_data = cur.fetchall()
+        
+        # Get column names from the cursor description
+        column_names = [desc[0] for desc in cur.description]
+        
         print("\nSample data:")
+        # Calculate maximum width for each column based on header and data
+        column_widths = []
+        for i, col_name in enumerate(column_names):
+            max_len = len(col_name) # Start with header length
+            for row in sample_data:
+                # Convert values to string to get their length for accurate alignment
+                max_len = max(max_len, len(str(row[i])))
+            column_widths.append(max_len)
+        
+        # Print header with dynamic alignment
+        header_row = " | ".join(f"{col_name:<{width}}" for col_name, width in zip(column_names, column_widths))
+        print(header_row)
+        print("-" * len(header_row)) # Print a separator line
+
+        # Print data rows with dynamic alignment
         for row in sample_data:
-            print(f"District: {row[0]}, Area: {row[1]}, Density: {row[2]}")
+            data_row = " | ".join(f"{str(row[i]):<{column_widths[i]}}" for i in range(len(row)))
+            print(data_row)
             
     except Exception as e:
         print(f"Error verifying data: {e}")
