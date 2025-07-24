@@ -2,11 +2,18 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any
-import csv
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import os
 
+# Database connection parameters
+hostname = "localhost"
+database = "recharts"
+username = "postgres"
+pwd = "Metal1394ever!"  # Update with your actual password
+port_id = 5432
+
 # Initialize FastAPI application
-# title and version are used in the OpenAPI (Swagger UI) documentation
 app = FastAPI(title="Population Data API", version="1.0.0")
 
 # Enable CORS for React frontend
@@ -21,133 +28,255 @@ app.add_middleware(
 class DistrictData(BaseModel):
     """
     Pydantic model representing a single district's population data.
-    Matches the structure of a row in the CSV file after parsing.
+    Matches the structure of the PostgreSQL table.
     """
-    District: str
-    GeographicalArea: float
-    PopulationDensity: int
-    Male: int
-    Female: int
-    Total: int
-    PercentageShare: float
-    Rank: int
+    id: int
+    district: str
+    geographical_area: float
+    population_density: int
+    male: int
+    female: int
+    total_population: int
+    percentage_share: float
+    rank_position: int
 
 class ChartDataPoint(BaseModel):
     """
     Pydantic model representing a simplified data point for charting purposes.
-    Designed to provide specific fields required by a charting library like Recharts.
     """
     District: str
     GeographicalAreaSqKms: float
     PopulationDensity: int
 
+def get_db_connection():
+    """Create and return a database connection"""
+    try:
+        conn = psycopg2.connect(
+            host=hostname,
+            dbname=database,
+            user=username,
+            password=pwd,
+            port=port_id,
+            cursor_factory=RealDictCursor
+        )
+        return conn
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database connection failed: {str(e)}")
+
 @app.get("/")
 def read_root():
     """
     Root endpoint for the API.
-    Provides a simple status message to confirm the API is running.
     """
-    return {"message": "Population Data API", "status": "running"}
+    return {"message": "Population Data API with PostgreSQL", "status": "running"}
 
 @app.get("/districts", response_model=List[DistrictData])
 def get_all_districts():
-    """Get all district data"""
+    """Get all district data from PostgreSQL"""
+    conn = None
     try:
-        districts = load_csv_data()
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT id, district, geographical_area, population_density, 
+                   male, female, total_population, percentage_share, rank_position
+            FROM populations 
+            ORDER BY district
+        """)
+        
+        rows = cur.fetchall()
+        
+        districts = []
+        for row in rows:
+            districts.append(DistrictData(
+                id=row['id'],
+                district=row['district'],
+                geographical_area=float(row['geographical_area']),
+                population_density=row['population_density'],
+                male=row['male'],
+                female=row['female'],
+                total_population=row['total_population'],
+                percentage_share=float(row['percentage_share']),
+                rank_position=row['rank_position']
+            ))
+        
         return districts
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error loading data: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
 
 @app.get("/chart-data", response_model=List[ChartDataPoint])
 def get_chart_data(limit: int = 20):
     """Get chart data for the first N districts (default 20)"""
+    conn = None
     try:
-        districts = load_csv_data()
-        # Filter out "State Total" and limit results
-        filtered_districts = [d for d in districts if d.District.lower() != "state total"]
-        limited_districts = filtered_districts[:limit]
+        conn = get_db_connection()
+        cur = conn.cursor()
         
-        # Transform to chart format
+        cur.execute("""
+            SELECT district, geographical_area, population_density
+            FROM populations 
+            ORDER BY district
+            LIMIT %s
+        """, (limit,))
+        
+        rows = cur.fetchall()
+        
         chart_data = []
-        for district in limited_districts:
+        for row in rows:
             chart_data.append(ChartDataPoint(
-                District=district.District,
-                GeographicalAreaSqKms=district.GeographicalArea,
-                PopulationDensity=district.PopulationDensity
+                District=row['district'],
+                GeographicalAreaSqKms=float(row['geographical_area']),
+                PopulationDensity=row['population_density']
             ))
         
         return chart_data
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing data: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
 
 @app.get("/districts/{district_name}")
 def get_district_by_name(district_name: str):
     """Get specific district data by name"""
+    conn = None
     try:
-        districts = load_csv_data()
-        district = next((d for d in districts if d.District.lower() == district_name.lower()), None)
-        if not district:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT id, district, geographical_area, population_density, 
+                   male, female, total_population, percentage_share, rank_position
+            FROM populations 
+            WHERE LOWER(district) = LOWER(%s)
+        """, (district_name,))
+        
+        row = cur.fetchone()
+        
+        if not row:
             raise HTTPException(status_code=404, detail="District not found")
+        
+        district = DistrictData(
+            id=row['id'],
+            district=row['district'],
+            geographical_area=float(row['geographical_area']),
+            population_density=row['population_density'],
+            male=row['male'],
+            female=row['female'],
+            total_population=row['total_population'],
+            percentage_share=float(row['percentage_share']),
+            rank_position=row['rank_position']
+        )
+        
         return district
+        
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
 
 @app.get("/top-districts")
 def get_top_districts(by: str = "population", limit: int = 10):
     """Get top districts by population, density, or area"""
+    conn = None
     try:
-        districts = load_csv_data()
-        # Filter out "State Total"
-        filtered_districts = [d for d in districts if d.District.lower() != "state total"]
+        # Validate sort parameter
+        valid_sorts = {
+            "population": "total_population",
+            "density": "population_density", 
+            "area": "geographical_area"
+        }
         
-        if by == "population":
-            sorted_districts = sorted(filtered_districts, key=lambda x: x.Total, reverse=True)
-        elif by == "density":
-            sorted_districts = sorted(filtered_districts, key=lambda x: x.PopulationDensity, reverse=True)
-        elif by == "area":
-            sorted_districts = sorted(filtered_districts, key=lambda x: x.GeographicalArea, reverse=True)
-        else:
+        if by not in valid_sorts:
             raise HTTPException(status_code=400, detail="Invalid 'by' parameter. Use: population, density, or area")
         
-        return sorted_districts[:limit]
+        sort_column = valid_sorts[by]
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute(f"""
+            SELECT id, district, geographical_area, population_density, 
+                   male, female, total_population, percentage_share, rank_position
+            FROM populations 
+            ORDER BY {sort_column} DESC
+            LIMIT %s
+        """, (limit,))
+        
+        rows = cur.fetchall()
+        
+        districts = []
+        for row in rows:
+            districts.append(DistrictData(
+                id=row['id'],
+                district=row['district'],
+                geographical_area=float(row['geographical_area']),
+                population_density=row['population_density'],
+                male=row['male'],
+                female=row['female'],
+                total_population=row['total_population'],
+                percentage_share=float(row['percentage_share']),
+                rank_position=row['rank_position']
+            ))
+        
+        return districts
+        
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
 
-def load_csv_data() -> List[DistrictData]:
-    """Load and parse CSV data"""
-    csv_path = "Area_Population_Density_and_Population_2011_Census.csv"
-    
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"CSV file not found: {csv_path}")
-    
-    districts = []
-    with open(csv_path, 'r', encoding='utf-8') as file:
-        csv_reader = csv.DictReader(file)
-        for row in csv_reader:
-            try:
-                # Clean and convert data
-                district = DistrictData(
-                    District=row['District'].strip(),
-                    GeographicalArea=float(row['Geograpical Area (Sq.Kms)'].strip()),
-                    PopulationDensity=int(row['Population Density'].strip()),
-                    Male=int(row['Male'].strip()),
-                    Female=int(row['Female'].strip()),
-                    Total=int(row[' Total'].strip()),  # Note the space in the CSV header
-                    PercentageShare=float(row['Percentage Share to Total Population'].strip()),
-                    Rank=int(row['Rank'].strip())
-                )
-                districts.append(district)
-            except (ValueError, KeyError) as e:
-                print(f"Error parsing row {row}: {e}")
-                continue
-    
-    return districts
+@app.get("/stats")
+def get_database_stats():
+    """Get basic statistics about the database"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Get total count
+        cur.execute("SELECT COUNT(*) as total_districts FROM populations")
+        total_count = cur.fetchone()['total_districts']
+        
+        # Get population statistics
+        cur.execute("""
+            SELECT 
+                SUM(total_population) as total_population,
+                AVG(population_density) as avg_density,
+                MAX(population_density) as max_density,
+                MIN(population_density) as min_density,
+                AVG(geographical_area) as avg_area
+            FROM populations
+        """)
+        stats = cur.fetchone()
+        
+        return {
+            "total_districts": total_count,
+            "total_population": int(stats['total_population']) if stats['total_population'] else 0,
+            "average_density": round(float(stats['avg_density']), 2) if stats['avg_density'] else 0,
+            "max_density": stats['max_density'],
+            "min_density": stats['min_density'],
+            "average_area": round(float(stats['avg_area']), 2) if stats['avg_area'] else 0
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting stats: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
 
 if __name__ == "__main__":
-    # This block ensures that uvicorn runs the FastAPI application when the script is executed directly.
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
