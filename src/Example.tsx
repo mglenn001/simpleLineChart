@@ -32,9 +32,9 @@ export default function Example() {
       try {
         setState(prevState => ({ ...prevState, loading: true, error: null }));
 
-        // Fetch data from FastAPI endpoint
-        const response = await fetch(`${API_BASE_URL}/chart-data?limit=20`);
-        
+        // Fetch data from FastAPI endpoint, ordering by rank_position
+        const response = await fetch(`${API_BASE_URL}/chart-data?limit=20&order_by=rank_position`);
+
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }

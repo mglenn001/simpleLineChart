@@ -1,10 +1,11 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query # Ensure Query is imported
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional # Ensure Optional is imported
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
+from datetime import datetime # Ensure datetime is imported
 
 # Database connection parameters
 hostname = "localhost"
@@ -109,20 +110,53 @@ def get_all_districts():
         if conn:
             conn.close()
 
+# MODIFIED /chart-data ENDPOINT
 @app.get("/chart-data", response_model=List[ChartDataPoint])
-def get_chart_data(limit: int = 20):
-    """Get chart data for the first N districts (default 20)"""
+def get_chart_data(
+    limit: int = Query(20, ge=1, description="Number of districts to return"),
+    order_by: str = Query("district", description="Column to order by: 'district', 'population_density', 'geographical_area', 'total_population', 'rank_position'")
+):
+    """
+    Get chart data for the first N districts, ordered by a specified column.
+    """
     conn = None
     try:
+        # Validate order_by parameter
+        valid_orders = {
+            "district": "district",
+            "population_density": "population_density",
+            "geographical_area": "geographical_area",
+            "total_population": "total_population",
+            "rank_position": "rank_position"
+        }
+        
+        if order_by not in valid_orders:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid 'order_by' parameter. Must be one of: {', '.join(valid_orders.keys())}"
+            )
+        
+        sort_column = valid_orders[order_by]
+        
         conn = get_db_connection()
         cur = conn.cursor()
         
-        cur.execute("""
+        # Determine sort order (ASC for rank_position, DESC for others if common for 'top' lists, or always ASC for visual flow)
+        # For a line graph, usually you want a continuous flow for the X-axis, so ASC makes sense for all.
+        # However, if you're sorting by a metric like population/density for "top N", DESC might be desired.
+        # Let's default to ASC for most and DESC for rank/population if that implies "top".
+        # For simplicity in a line chart that shows trend over sorted data, ASC is generally better.
+        # If showing "top 20 districts by population", then sort_column DESC is appropriate.
+        # For this chart, let's assume `rank_position` is ascending from 1 to N, and others are ascending as well for visual flow.
+        
+        sql_query = f"""
             SELECT district, geographical_area, population_density
             FROM populations 
-            ORDER BY district
-            LIMIT %s
-        """, (limit,))
+            ORDER BY {sort_column} ASC
+            LIMIT %s;
+        """
+        
+        cur.execute(sql_query, (limit,))
         
         rows = cur.fetchall()
         
@@ -136,8 +170,10 @@ def get_chart_data(limit: int = 20):
         
         return chart_data
         
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing data for chart: {str(e)}")
     finally:
         if conn:
             conn.close()
