@@ -1,22 +1,43 @@
 import pdfplumber
 import psycopg2
 import os
+import re
 
 # Database connection parameters
 hostname = "localhost"
-database = "pdf_datasets" # The database name from your prompt
+database = "pdf_datasets"
 username = "postgres"
-pwd = os.getenv("DB_PASSWORD", "Metal1394ever!") # It's safer to use an environment variable for the password
+pwd = os.getenv("DB_PASSWORD", "Metal1394ever!")
 port_id = 5432
+
+def clean_numeric_value(value_str):
+    """Clean and convert string values to integers, handling various formats"""
+    if not value_str or value_str.strip() == '':
+        return None
+    
+    # Remove newlines, commas, and extra spaces
+    cleaned = str(value_str).replace('\n', '').replace(',', '').strip()
+    
+    # Handle negative values
+    if cleaned.startswith('-'):
+        try:
+            return -int(cleaned[1:])
+        except ValueError:
+            return None
+    
+    # Try to convert to integer
+    try:
+        return int(cleaned)
+    except ValueError:
+        return None
 
 def create_and_ingest_data():
     """
-    Connects to the PostgreSQL database, creates a new table,
-    and ingests data extracted from India2.pdf.
+    Connects to the PostgreSQL database, creates a new table for the All_India data,
+    and ingests data extracted from All_India.pdf.
     """
     conn = None
     try:
-        # Establish a connection to the database
         conn = psycopg2.connect(
             host=hostname,
             dbname=database,
@@ -26,68 +47,148 @@ def create_and_ingest_data():
         )
         cur = conn.cursor()
 
-        # SQL to create the table based on the PDF's table structure
+        # SQL to create the new table for the All-India dataset
         create_table_query = """
-        CREATE TABLE IF NOT EXISTS top_industries (
+        CREATE TABLE IF NOT EXISTS all_india_stats (
             id SERIAL PRIMARY KEY,
-            rank VARCHAR(100),
-            total_no_of_factories VARCHAR(100),
-            no_of_factories_in_operation VARCHAR(100),
-            fixed_capital VARCHAR(100),
-            total_persons_engaged VARCHAR(100),
-            output VARCHAR(100),
-            gross_value_added VARCHAR(100)
+            characteristic_name VARCHAR(255),
+            all_industries BIGINT,
+            industry_0163 BIGINT,
+            industry_0164 BIGINT,
+            industry_0893 BIGINT,
+            industry_1010 BIGINT,
+            industry_1020 BIGINT,
+            industry_1030 BIGINT,
+            industry_1040 BIGINT,
+            industry_1050 BIGINT,
+            industry_1061 BIGINT
         );
         """
         cur.execute(create_table_query)
         conn.commit()
-        print("Table 'top_industries' created or already exists.")
+        print("Table 'all_india_stats' created or already exists.")
 
-        # Use pdfplumber to open the PDF and extract tables
-        with pdfplumber.open("India2.pdf") as pdf:
-            # We are interested in the table on the first page
+        # Clean existing data to avoid duplicates on rerun
+        cur.execute("DELETE FROM all_india_stats;")
+        conn.commit()
+
+        with pdfplumber.open("All_India.pdf") as pdf:
             page = pdf.pages[0]
-            # Extract tables from the page
-            tables = page.extract_tables()
+            
+            # Extract text and try to parse it line by line
+            text = page.extract_text()
+            lines = text.split('\n')
+            
+            # Find the start of the data (after headers)
+            data_started = False
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Skip header lines and start processing when we find numbered characteristics
+                if re.match(r'^\d+\.', line):
+                    data_started = True
+                
+                if not data_started:
+                    continue
+                
+                # Split the line and try to extract data
+                parts = re.split(r'\s+', line)
+                
+                if len(parts) < 2:
+                    continue
+                
+                # Extract characteristic name (everything before the first number)
+                characteristic_match = re.match(r'^(\d+\.\s*[^0-9]+)', line)
+                if not characteristic_match:
+                    continue
+                
+                characteristic_name = characteristic_match.group(1).strip()
+                
+                # Extract numbers from the line
+                numbers_text = line[len(characteristic_match.group(1)):].strip()
+                number_parts = re.split(r'\s+', numbers_text)
+                
+                # Convert to numbers
+                values = []
+                for part in number_parts[:10]:  # We expect 10 columns of data
+                    cleaned_value = clean_numeric_value(part)
+                    values.append(cleaned_value)
+                
+                # Pad with None if we don't have enough values
+                while len(values) < 10:
+                    values.append(None)
+                
+                # Only insert if we have at least one non-null value
+                if any(v is not None for v in values):
+                    insert_query = """
+                    INSERT INTO all_india_stats (characteristic_name, all_industries, industry_0163, industry_0164, industry_0893, industry_1010, industry_1020, industry_1030, industry_1040, industry_1050, industry_1061)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    """
+                    cur.execute(insert_query, (characteristic_name, *values))
 
-            # Assuming the first table is the one we want
-            if tables and len(tables) > 0:
-                table = tables[0]
-
-                # Start from the third row to skip headers and blank rows
-                for row in table[2:]:
-                    # Check if the row has enough elements to avoid index errors
-                    if len(row) >= 7:
-                        # Extract data from the row
-                        rank = row[0].replace("\n", " ") if row[0] else None
-                        total_no_of_factories = row[1].replace("\n", " ") if row[1] else None
-                        no_of_factories_in_operation = row[2].replace("\n", " ") if row[2] else None
-                        fixed_capital = row[3].replace("\n", " ") if row[3] else None
-                        total_persons_engaged = row[4].replace("\n", " ") if row[4] else None
-                        output = row[5].replace("\n", " ") if row[5] else None
-                        gross_value_added = row[6].replace("\n", " ") if row[6] else None
+        # If the above method doesn't work well, try table extraction as fallback
+        try:
+            with pdfplumber.open("All_India.pdf") as pdf:
+                page = pdf.pages[0]
+                
+                # Try different table extraction settings
+                tables = page.extract_tables(table_settings={
+                    "vertical_strategy": "lines_strict",
+                    "horizontal_strategy": "lines_strict",
+                    "snap_tolerance": 3,
+                })
+                
+                if tables:
+                    table = tables[0]
+                    print(f"Found table with {len(table)} rows")
+                    
+                    # Clear previous data
+                    cur.execute("DELETE FROM all_india_stats;")
+                    conn.commit()
+                    
+                    for i, row in enumerate(table):
+                        if i < 2:  # Skip header rows
+                            continue
                         
-                        # Insert data into the table
-                        insert_query = """
-                        INSERT INTO top_industries (
-                            rank, total_no_of_factories, no_of_factories_in_operation,
-                            fixed_capital, total_persons_engaged, output, gross_value_added
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s);
-                        """
-                        cur.execute(insert_query, (
-                            rank, total_no_of_factories, no_of_factories_in_operation,
-                            fixed_capital, total_persons_engaged, output, gross_value_added
-                        ))
+                        if not row or not row[0]:
+                            continue
+                        
+                        characteristic_name = str(row[0]).replace('\n', ' ').strip()
+                        
+                        # Skip if it's just a number or header
+                        if characteristic_name.isdigit() or 'Characteristics' in characteristic_name:
+                            continue
+                        
+                        values = []
+                        for j in range(1, min(11, len(row))):  # Get up to 10 data columns
+                            cleaned_value = clean_numeric_value(row[j])
+                            values.append(cleaned_value)
+                        
+                        # Pad with None if needed
+                        while len(values) < 10:
+                            values.append(None)
+                        
+                        if any(v is not None for v in values):
+                            insert_query = """
+                            INSERT INTO all_india_stats (characteristic_name, all_industries, industry_0163, industry_0164, industry_0893, industry_1010, industry_1020, industry_1030, industry_1040, industry_1050, industry_1061)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                            """
+                            cur.execute(insert_query, (characteristic_name, *values))
+        
+        except Exception as table_error:
+            print(f"Table extraction fallback failed: {table_error}")
 
-                conn.commit()
-                print(f"Successfully ingested data into 'top_industries' table.")
-            else:
-                print("No tables found on the first page.")
+        conn.commit()
+        print("Successfully ingested data into 'all_india_stats' table.")
 
     except (Exception, psycopg2.Error) as error:
         print(f"Error while connecting to PostgreSQL or processing PDF: {error}")
+        if conn:
+            conn.rollback()
     finally:
-        # Close the database connection
         if conn:
             cur.close()
             conn.close()
