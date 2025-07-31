@@ -1,164 +1,97 @@
+import pdfplumber
 import psycopg2
-import csv
-from datetime import datetime
+import os
 
-# Database connection parameters for the new recharts database
+# Database connection parameters
 hostname = "localhost"
-database = "recharts"  # New database name
+database = "pdf_datasets" # The database name from your prompt
 username = "postgres"
-pwd = "Metal1394ever!"  # Use your actual password
+pwd = os.getenv("DB_PASSWORD", "Metal1394ever!") # It's safer to use an environment variable for the password
 port_id = 5432
 
-def connect_to_db():
-    """Connect to PostgreSQL recharts database"""
-    return psycopg2.connect(
-        host=hostname,
-        dbname=database,
-        user=username,
-        password=pwd,
-        port=port_id
-    )
-
-def create_populations_table():
-    """Create the populations table with proper data types"""
-    conn = connect_to_db()
-    cur = conn.cursor()
-
-    # Create populations table
-    create_table_query = """
-    CREATE TABLE IF NOT EXISTS populations (
-        id SERIAL PRIMARY KEY,
-        district VARCHAR(100) NOT NULL,
-        geographical_area DECIMAL(10,2) NOT NULL,
-        population_density INTEGER NOT NULL,
-        male INTEGER NOT NULL,
-        female INTEGER NOT NULL,
-        total_population INTEGER NOT NULL,
-        percentage_share DECIMAL(5,2) NOT NULL,
-        rank_position INTEGER NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );"""
-
-    cur.execute(create_table_query)
-    conn.commit()
-    cur.close()
-    conn.close()
-    print("Table 'populations' created successfully")
-
-def ingest_population_data():
-    """Ingest data from CSV file into PostgreSQL populations table"""
-    # First create the table
-    create_populations_table()
-
-    # Connect to PostgreSQL
-    conn = connect_to_db()
-    cur = conn.cursor()
-
+def create_and_ingest_data():
+    """
+    Connects to the PostgreSQL database, creates a new table,
+    and ingests data extracted from India2.pdf.
+    """
+    conn = None
     try:
-        # Open the CSV file
-        with open('Area_Population_Density_and_Population_2011_Census.csv', 'r', encoding='utf-8') as file:
-            csv_reader = csv.DictReader(file)
-            
-            row_count = 0
-            error_count = 0
+        # Establish a connection to the database
+        conn = psycopg2.connect(
+            host=hostname,
+            dbname=database,
+            user=username,
+            password=pwd,
+            port=port_id
+        )
+        cur = conn.cursor()
 
-            # Insert each row into the table
-            for row in csv_reader:
-                try:
-                    # Skip the "State Total" row as it's summary data
-                    if row['District'].strip().lower() == 'state total':
-                        continue
+        # SQL to create the table based on the PDF's table structure
+        create_table_query = """
+        CREATE TABLE IF NOT EXISTS top_industries (
+            id SERIAL PRIMARY KEY,
+            rank VARCHAR(100),
+            total_no_of_factories VARCHAR(100),
+            no_of_factories_in_operation VARCHAR(100),
+            fixed_capital VARCHAR(100),
+            total_persons_engaged VARCHAR(100),
+            output VARCHAR(100),
+            gross_value_added VARCHAR(100)
+        );
+        """
+        cur.execute(create_table_query)
+        conn.commit()
+        print("Table 'top_industries' created or already exists.")
+
+        # Use pdfplumber to open the PDF and extract tables
+        with pdfplumber.open("India2.pdf") as pdf:
+            # We are interested in the table on the first page
+            page = pdf.pages[0]
+            # Extract tables from the page
+            tables = page.extract_tables()
+
+            # Assuming the first table is the one we want
+            if tables and len(tables) > 0:
+                table = tables[0]
+
+                # Start from the third row to skip headers and blank rows
+                for row in table[2:]:
+                    # Check if the row has enough elements to avoid index errors
+                    if len(row) >= 7:
+                        # Extract data from the row
+                        rank = row[0].replace("\n", " ") if row[0] else None
+                        total_no_of_factories = row[1].replace("\n", " ") if row[1] else None
+                        no_of_factories_in_operation = row[2].replace("\n", " ") if row[2] else None
+                        fixed_capital = row[3].replace("\n", " ") if row[3] else None
+                        total_persons_engaged = row[4].replace("\n", " ") if row[4] else None
+                        output = row[5].replace("\n", " ") if row[5] else None
+                        gross_value_added = row[6].replace("\n", " ") if row[6] else None
                         
-                    # Parse and validate data
-                    district = row['District'].strip()
-                    geographical_area = float(row['Geograpical Area (Sq.Kms)'].strip())
-                    population_density = int(row['Population Density'].strip())
-                    male = int(row['Male'].strip())
-                    female = int(row['Female'].strip())
-                    total_population = int(row[' Total'].strip())  # Note the space in header
-                    percentage_share = float(row['Percentage Share to Total Population'].strip())
-                    rank_position = int(row['Rank'].strip())
-                    
-                    # Insert into database
-                    cur.execute("""
-                        INSERT INTO populations 
-                        (district, geographical_area, population_density, male, female, 
-                         total_population, percentage_share, rank_position) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (district, geographical_area, population_density, male, female, 
-                          total_population, percentage_share, rank_position))
-                    
-                    row_count += 1
-                    
-                    # Print progress every 50 rows
-                    if row_count % 50 == 0:
-                        print(f"Processed {row_count} rows...")
-                        
-                except (ValueError, KeyError) as e:
-                    error_count += 1
-                    print(f"Error processing row {row_count + error_count}: {e}")
-                    print(f"Row data: {row}")
-                    continue
+                        # Insert data into the table
+                        insert_query = """
+                        INSERT INTO top_industries (
+                            rank, total_no_of_factories, no_of_factories_in_operation,
+                            fixed_capital, total_persons_engaged, output, gross_value_added
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s);
+                        """
+                        cur.execute(insert_query, (
+                            rank, total_no_of_factories, no_of_factories_in_operation,
+                            fixed_capital, total_persons_engaged, output, gross_value_added
+                        ))
 
-            # Commit and close the connection
-            conn.commit()
-            print(f"Data ingested successfully!")
-            print(f"Total rows processed: {row_count}")
-            print(f"Errors encountered: {error_count}")
-            
-    except Exception as e:
-        print(f"Error during data ingestion: {e}")
-        conn.rollback()
+                conn.commit()
+                print(f"Successfully ingested data into 'top_industries' table.")
+            else:
+                print("No tables found on the first page.")
+
+    except (Exception, psycopg2.Error) as error:
+        print(f"Error while connecting to PostgreSQL or processing PDF: {error}")
     finally:
-        cur.close()
-        conn.close()
+        # Close the database connection
+        if conn:
+            cur.close()
+            conn.close()
+            print("PostgreSQL connection closed.")
 
-def verify_data():
-    """Verify the data was inserted correctly"""
-    conn = connect_to_db()
-    cur = conn.cursor()
-    
-    try:
-        # Get total count
-        cur.execute("SELECT COUNT(*) FROM populations;")
-        total_count = cur.fetchone()[0]
-        print(f"Total records in populations table: {total_count}")
-        
-        # Get sample data
-        cur.execute("SELECT district, geographical_area, population_density FROM populations LIMIT 5;")
-        sample_data = cur.fetchall()
-        
-        # Get column names from the cursor description
-        column_names = [desc[0] for desc in cur.description]
-        
-        print("\nSample data:")
-        # Calculate maximum width for each column based on header and data
-        column_widths = []
-        for i, col_name in enumerate(column_names):
-            max_len = len(col_name) # Start with header length
-            for row in sample_data:
-                # Convert values to string to get their length for accurate alignment
-                max_len = max(max_len, len(str(row[i])))
-            column_widths.append(max_len)
-        
-        # Print header with dynamic alignment
-        header_row = " | ".join(f"{col_name:<{width}}" for col_name, width in zip(column_names, column_widths))
-        print(header_row)
-        print("-" * len(header_row)) # Print a separator line
-
-        # Print data rows with dynamic alignment
-        for row in sample_data:
-            data_row = " | ".join(f"{str(row[i]):<{column_widths[i]}}" for i in range(len(row)))
-            print(data_row)
-            
-    except Exception as e:
-        print(f"Error verifying data: {e}")
-    finally:
-        cur.close()
-        conn.close()
-
-if __name__ == "__main__":
-    print("Setting up PostgreSQL database for population data...")
-    ingest_population_data()
-    verify_data()
-    print("Setup complete!")
+if __name__ == '__main__':
+    create_and_ingest_data()
