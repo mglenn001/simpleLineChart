@@ -96,17 +96,15 @@ async def get_all_india_stats():
         available_characteristics = [row['characteristic_name'] for row in cur.fetchall()]
         logger.info(f"Available characteristics: {available_characteristics}")
 
-        # SQL query to fetch all data from the all_india_stats table
-        # Look for Fixed Capital and Total Persons Engaged with more flexible matching
+        # SQL query to fetch Working Capital and Invested Capital for all industries
         cur.execute("""
             SELECT characteristic_name, 
+                   industry_0163, industry_0164, industry_0893,
                    industry_1010, industry_1020, industry_1030, 
                    industry_1040, industry_1050, industry_1061 
             FROM all_india_stats 
-            WHERE characteristic_name ILIKE '%Fixed Capital%' 
-               OR characteristic_name ILIKE '%Total Persons Engaged%'
-               OR characteristic_name ILIKE '%Fixed%'
-               OR characteristic_name ILIKE '%Persons%';
+            WHERE characteristic_name ILIKE '%Working Capital%' 
+               OR characteristic_name ILIKE '%Invested Capital%';
         """)
         data = cur.fetchall()
 
@@ -114,6 +112,7 @@ async def get_all_india_stats():
             # If no specific matches, get the first few rows for debugging
             cur.execute("""
                 SELECT characteristic_name, 
+                       industry_0163, industry_0164, industry_0893,
                        industry_1010, industry_1020, industry_1030, 
                        industry_1040, industry_1050, industry_1061 
                 FROM all_india_stats 
